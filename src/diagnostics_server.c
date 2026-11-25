@@ -114,6 +114,10 @@ bool diag_server_poll(DiagServer* s) {
         sock_t client=accept(s->listener,NULL,NULL);
         if(client!=BAD_SOCKET) {
             if(!nonblocking(client)){close_socket(client);return false;}
+#if defined(SO_NOSIGPIPE) && !defined(MSG_NOSIGNAL)
+            int no_sigpipe=1;
+            if(setsockopt(client,SOL_SOCKET,SO_NOSIGPIPE,&no_sigpipe,sizeof(no_sigpipe))!=0){close_socket(client);return false;}
+#endif
             s->client=client;vb_stream_reset(&s->stream);
         }else if(!vb_stream_would_block())return false;
     }

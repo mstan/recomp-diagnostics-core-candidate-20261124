@@ -1,4 +1,4 @@
-// replay_writer.h — bounded background writer for diagnostic replays.
+// replay_writer.h â€” bounded background writer for diagnostic replays.
 //
 // One simulation producer, one disk worker. Every producer call only copies
 // into a fixed single-producer/single-consumer byte ring; it never waits on
@@ -42,6 +42,7 @@ struct ReplayHash {
 };
 std::uint64_t replay_hash(const void* data, std::size_t size);
 
+// Producer calls, status and shutdown must be serialized on the producer thread.
 class ReplayWriter {
 public:
     static constexpr std::size_t kQueueBytes = 32u * 1024u * 1024u;

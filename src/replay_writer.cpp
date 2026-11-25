@@ -1,4 +1,4 @@
-// replay_writer.cpp — see replay_writer.h.
+// replay_writer.cpp â€” see replay_writer.h.
 
 #include "replay_writer.h"
 
@@ -94,7 +94,8 @@ struct ReplayWriter::Impl {
     std::atomic<std::size_t> read_pos{0};
     std::atomic<std::size_t> write_pos{0};
     std::atomic<int> error{OK};
-    std::atomic<bool> full{false};
+    std::atomic<std::size_t> pending_need{0};
+    bool session = false; // producer only; begin/end order is validated before enqueue
     std::atomic<bool> stop{false};
     std::size_t head = 0;  // producer only
 #if RECOMP_DIAGNOSTICS_REPLAY_WRITER_THREADS
@@ -102,7 +103,7 @@ struct ReplayWriter::Impl {
 #endif
     bool joined = false;
 
-    // ── producer ──────────────────────────────────────────────────────
+    // â”€â”€ producer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     std::size_t free_space() const {
         const std::size_t tail = read_pos.load(std::memory_order_acquire);
         return (tail + kQueueBytes - head - 1) % kQueueBytes;
@@ -124,10 +125,17 @@ struct ReplayWriter::Impl {
         if (stop.load(std::memory_order_relaxed) ||
             error.load(std::memory_order_relaxed) != OK)
             return false;
-        const std::size_t need = sizeof(Command) + c.size;
-        if (need >= kQueueBytes) { fail(INVALID); return false; }
+        constexpr std::size_t max_payload = kQueueBytes - sizeof(Command) - 1;
+        if (c.size > max_payload || (parts && (!data || !sizes))) { fail(INVALID); return false; }
+        std::size_t total = 0;
+        for (unsigned i=0; i<parts; ++i) {
+            if ((sizes[i] && !data[i]) || sizes[i] > c.size-total) { fail(INVALID); return false; }
+            total += sizes[i];
+        }
+        if (total != c.size) { fail(INVALID); return false; }
+        const std::size_t need = sizeof(Command) + static_cast<std::size_t>(c.size);
         if (need > free_space()) {
-            full.store(true, std::memory_order_relaxed);
+            pending_need.store(need, std::memory_order_relaxed);
             return false;
         }
         std::size_t at = head;
@@ -139,13 +147,13 @@ struct ReplayWriter::Impl {
             at = (at + sizes[i]) % kQueueBytes;
         }
         head = at;
-        full.store(false, std::memory_order_relaxed);
+        pending_need.store(0, std::memory_order_relaxed);
         // Release publishes every payload byte before the worker sees head.
         write_pos.store(at, std::memory_order_release);
         return true;
     }
 
-    // ── worker ────────────────────────────────────────────────────────
+    // â”€â”€ worker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     void get(std::size_t at, void* data, std::size_t n) const {
         if (!n) return;
         const std::size_t first = std::min(n, kQueueBytes - at);
@@ -210,9 +218,9 @@ struct ReplayWriter::Impl {
         auto last_flush = std::chrono::steady_clock::now();
         bool dirty = false;
         // Test-only slow storage (acceptance of back-pressure recovery):
-        // GBARECOMP_DIAGNOSTICS_TEST_WRITER_DELAY_US delays every frame record.
+        // RECOMP_DIAGNOSTICS_TEST_WRITER_DELAY_US delays every frame record.
         long frame_delay_us = 0;
-        if (const char* e = std::getenv("GBARECOMP_DIAGNOSTICS_TEST_WRITER_DELAY_US"))
+        if (const char* e = std::getenv("RECOMP_DIAGNOSTICS_TEST_WRITER_DELAY_US"))
             frame_delay_us = std::strtol(e, nullptr, 10);
         for (;;) {
             if (write_pos.load(std::memory_order_acquire) != tail) {
@@ -366,7 +374,19 @@ void append_string(std::vector<std::uint8_t>& blob, const std::string& s) {
 bool ReplayWriter::begin(const std::string& path, const std::string& header,
                          const std::vector<Sidecar>& sidecars,
                          const std::vector<Sidecar>& inline_texts) {
+    constexpr std::size_t max_payload = kQueueBytes - sizeof(Command) - 1;
+    std::size_t total = 8;
+    auto fits = [&](const std::string& value) {
+        if (total > max_payload-4 || value.size() > max_payload-total-4) return false;
+        total += 4 + value.size(); return true;
+    };
+    if (sidecars.size()>UINT32_MAX || inline_texts.size()>UINT32_MAX || !fits(path) || !fits(header)) {
+        impl_->fail(INVALID); return false;
+    }
+    for (const auto& item : sidecars) if(!fits(item.source) || !fits(item.dest)) {impl_->fail(INVALID);return false;}
+    for (const auto& item : inline_texts) if(!fits(item.source) || !fits(item.dest)) {impl_->fail(INVALID);return false;}
     std::vector<std::uint8_t> blob;
+    blob.reserve(total);
     append_string(blob, path);
     append_string(blob, header);
     const auto copies = static_cast<std::uint32_t>(sidecars.size());
@@ -383,10 +403,13 @@ bool ReplayWriter::begin(const std::string& path, const std::string& header,
     c.size = blob.size();
     const void* data[] = {blob.data()};
     const std::size_t sizes[] = {blob.size()};
-    return impl_->enqueue(c, data, sizes, 1);
+    const bool accepted=impl_->enqueue(c,data,sizes,1);
+    if(accepted)impl_->session=true;
+    return accepted;
 }
 
 bool ReplayWriter::snapshot(const void* data, std::size_t size, char kind) {
+    if(!impl_->session){impl_->fail(INVALID);return false;}
     Command c;
     c.op = SNAPSHOT;
     c.size = size;
@@ -397,6 +420,7 @@ bool ReplayWriter::snapshot(const void* data, std::size_t size, char kind) {
 }
 
 bool ReplayWriter::line(const std::string& text) {
+    if(!impl_->session){impl_->fail(INVALID);return false;}
     Command c;
     c.op = LINE;
     c.size = text.size();
@@ -406,7 +430,8 @@ bool ReplayWriter::line(const std::string& text) {
 }
 
 bool ReplayWriter::frame(std::uint64_t frame, const Part* parts, unsigned count) {
-    if (count > kMaxParts) { impl_->fail(INVALID); return false; }
+    if(!impl_->session){impl_->fail(INVALID);return false;}
+    if (count > kMaxParts || (count && !parts)) { impl_->fail(INVALID); return false; }
     Command c;
     c.op = FRAME;
     c.frame = frame;
@@ -419,6 +444,8 @@ bool ReplayWriter::frame(std::uint64_t frame, const Part* parts, unsigned count)
             c.reuse_mask |= 1u << i;
             continue;
         }
+        constexpr std::size_t max_payload = kQueueBytes - sizeof(Command) - 1;
+        if(parts[i].size > max_payload-c.size){impl_->fail(INVALID);return false;}
         c.sizes[i] = parts[i].size;
         c.size += parts[i].size;
         data[payload_parts] = parts[i].data;
@@ -438,9 +465,12 @@ bool ReplayWriter::remove(const std::string& path) {
 }
 
 bool ReplayWriter::end() {
+    if(!impl_->session){impl_->fail(INVALID);return false;}
     Command c;
     c.op = END;
-    return impl_->enqueue(c, nullptr, nullptr, 0);
+    const bool accepted=impl_->enqueue(c,nullptr,nullptr,0);
+    if(accepted)impl_->session=false;
+    return accepted;
 }
 
 ReplayWriter::Status ReplayWriter::status() const {
@@ -448,8 +478,8 @@ ReplayWriter::Status ReplayWriter::status() const {
         case INVALID: return Status::Invalid;
         case IO: return Status::Io;
         default:
-            return impl_->full.load(std::memory_order_relaxed) ? Status::Full
-                                                                : Status::Ok;
+            return impl_->pending_need.load(std::memory_order_relaxed) > impl_->free_space()
+                       ? Status::Full : Status::Ok;
     }
 }
 

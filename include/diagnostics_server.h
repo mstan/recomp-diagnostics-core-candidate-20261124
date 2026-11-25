@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 typedef struct DiagServer DiagServer;
+/* Callbacks may reply, but must not destroy, register commands or recursively
+ * poll the same server. Arguments are borrowed until the callback returns. */
 typedef void (*DiagCommand)(void* user,DiagServer*,const char* arguments);
 /* Loopback-only, nonblocking. Port 0 requests an available port. Poll on the
    engine owner thread; callbacks never mutate guest state on a worker. */
