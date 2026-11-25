@@ -64,7 +64,8 @@ public:
     };
 
     // Null when the host cannot run a worker thread.
-    static std::unique_ptr<ReplayWriter> create();
+    enum class Format { Hashed64, Genesis32 };
+    static std::unique_ptr<ReplayWriter> create(Format format=Format::Hashed64);
     ~ReplayWriter();
     ReplayWriter(const ReplayWriter&) = delete;
     ReplayWriter& operator=(const ReplayWriter&) = delete;
@@ -91,7 +92,7 @@ public:
     const char* shutdown();
 
 private:
-    ReplayWriter();
+    explicit ReplayWriter(Format);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

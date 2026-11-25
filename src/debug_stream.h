@@ -9,7 +9,9 @@ typedef struct {
     size_t used;
     char* output;
     size_t size, sent;
-    int failed;
+    int failed,discard;
+    size_t line_limit,output_limit;
+    void (*invalid)(void*,const char*);void* invalid_user;
 } DiagStream;
 #define vb_stream (*stream)
 
@@ -17,18 +19,20 @@ static void vb_stream_reset(DiagStream* stream) {
     free(vb_stream.output);
     memset(&vb_stream, 0, sizeof(vb_stream));
 }
-static void vb_stream_queue(DiagStream* stream, const char* body) {
-    size_t n = strlen(body);
+static void vb_stream_queue_bytes(DiagStream* stream,const char* body,size_t n) {
     if (vb_stream.failed) return;
-    if (n >= 64u*1024u*1024u || vb_stream.size > 64u*1024u*1024u - n - 1u) {
-        vb_stream.failed = 1; return;
+    size_t limit=vb_stream.output_limit?vb_stream.output_limit:64u*1024u*1024u;
+    if ((!body&&n) || n > limit || vb_stream.size > limit-n) {
+        vb_stream.failed=1;return;
     }
-    char* next = (char*)realloc(vb_stream.output, vb_stream.size + n + 1);
-    if (!next) { vb_stream.failed = 1; return; }
-    vb_stream.output = next;
-    memcpy(next + vb_stream.size, body, n);
-    vb_stream.size += n;
-    next[vb_stream.size++] = '\n';
+    if(!n)return;
+    char* next=(char*)realloc(vb_stream.output,vb_stream.size+n);
+    if(!next){vb_stream.failed=1;return;}
+    vb_stream.output=next;memcpy(next+vb_stream.size,body,n);vb_stream.size+=n;
+}
+static void vb_stream_queue(DiagStream* stream,const char* body) {
+    vb_stream_queue_bytes(stream,body,strlen(body));
+    vb_stream_queue_bytes(stream,"\n",1);
 }
 static int vb_stream_would_block(void) {
 #ifdef _WIN32
@@ -66,13 +70,20 @@ static int vb_stream_poll(DiagStream* stream, sock_t client, void (*dispatch)(vo
     if (n <= 0) return n < 0 && vb_stream_would_block();
     for (int i = 0; i < n; ++i) {
         if (chunk[i] == '\n') {
+            if(vb_stream.discard){vb_stream.discard=0;vb_stream.used=0;continue;}
             if (vb_stream.used && vb_stream.input[vb_stream.used - 1] == '\r')
                 --vb_stream.used;
             vb_stream.input[vb_stream.used] = 0;
             if (vb_stream.used) dispatch(user,vb_stream.input);
             vb_stream.used = 0;
         } else {
-            if (!chunk[i] || vb_stream.used == sizeof(vb_stream.input)-1) return 0;
+            if(vb_stream.discard)continue;
+            size_t limit=vb_stream.line_limit?vb_stream.line_limit:sizeof(vb_stream.input)-1;
+            if(!chunk[i] || vb_stream.used==limit) {
+                if(!vb_stream.invalid)return 0;
+                vb_stream.invalid(vb_stream.invalid_user,!chunk[i]?"NUL byte in command line":"command line too long");
+                vb_stream.used=0;vb_stream.discard=1;continue;
+            }
             vb_stream.input[vb_stream.used++] = chunk[i];
         }
     }

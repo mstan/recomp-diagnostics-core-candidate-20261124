@@ -3,6 +3,7 @@
 #include "replay_writer.h"
 
 #include <atomic>
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -89,8 +90,47 @@ std::uint64_t replay_hash(const void* data, std::size_t size) {
     return h.finish();
 }
 
+static bool rotate_history(const char *base) {
+  const char *suffix[] = {"", ".sav", ".config.ini", ".mods.toml", ".mods.txt"};
+  char src[1500], dst[1500], row[64];
+  for (int i = 2; i >= 0; --i) {
+    if (i)
+      snprintf(src, sizeof src, "%s.previous-%d", base, i);
+    else
+      snprintf(src, sizeof src, "%s", base);
+    FILE *f = fopen(src, "rb");
+    if (!f) {
+      if (errno != ENOENT)
+        return false;
+      continue;
+    }
+    bool owned = fgets(row, sizeof row, f) && !strcmp(row, "GENESISREPLAY 1\n");
+    fclose(f);
+    if (!owned)
+      return false;
+    for (unsigned j = 0; j < sizeof suffix / sizeof suffix[0]; ++j) {
+      if (i)
+        snprintf(src, sizeof src, "%s.previous-%d%s", base, i, suffix[j]);
+      else
+        snprintf(src, sizeof src, "%s%s", base, suffix[j]);
+      if (i == 2) {
+        if (remove(src) && errno != ENOENT)
+          return false;
+      } else {
+        snprintf(dst, sizeof dst, "%s.previous-%d%s", base, i + 1, suffix[j]);
+        if (rename(src, dst) && errno != ENOENT)
+          return false;
+      }
+    }
+  }
+  return true;
+}
+
 struct ReplayWriter::Impl {
-    std::vector<std::uint8_t> ring = std::vector<std::uint8_t>(kQueueBytes);
+    Format format;
+    const std::size_t queue_bytes;
+    std::vector<std::uint8_t> ring;
+    explicit Impl(Format f):format(f),queue_bytes(f==Format::Genesis32?16u*1024u*1024u:ReplayWriter::kQueueBytes),ring(queue_bytes) {}
     std::atomic<std::size_t> read_pos{0};
     std::atomic<std::size_t> write_pos{0};
     std::atomic<int> error{OK};
@@ -106,11 +146,11 @@ struct ReplayWriter::Impl {
     // â”€â”€ producer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     std::size_t free_space() const {
         const std::size_t tail = read_pos.load(std::memory_order_acquire);
-        return (tail + kQueueBytes - head - 1) % kQueueBytes;
+        return (tail + queue_bytes - head - 1) % queue_bytes;
     }
     void put(std::size_t at, const void* data, std::size_t n) {
         if (!n) return;
-        const std::size_t first = std::min(n, kQueueBytes - at);
+        const std::size_t first = std::min(n, queue_bytes - at);
         std::memcpy(ring.data() + at, data, first);
         if (n > first)
             std::memcpy(ring.data(),
@@ -125,7 +165,7 @@ struct ReplayWriter::Impl {
         if (stop.load(std::memory_order_relaxed) ||
             error.load(std::memory_order_relaxed) != OK)
             return false;
-        constexpr std::size_t max_payload = kQueueBytes - sizeof(Command) - 1;
+        const std::size_t max_payload = queue_bytes - sizeof(Command) - 1;
         if (c.size > max_payload || (parts && (!data || !sizes))) { fail(INVALID); return false; }
         std::size_t total = 0;
         for (unsigned i=0; i<parts; ++i) {
@@ -140,11 +180,11 @@ struct ReplayWriter::Impl {
         }
         std::size_t at = head;
         put(at, &c, sizeof(c));
-        at = (at + sizeof(c)) % kQueueBytes;
+        at = (at + sizeof(c)) % queue_bytes;
         for (unsigned i = 0; i < parts; ++i) {
             if (sizes[i] && !data[i]) { fail(INVALID); return false; }
             put(at, data[i], sizes[i]);
-            at = (at + sizes[i]) % kQueueBytes;
+            at = (at + sizes[i]) % queue_bytes;
         }
         head = at;
         pending_need.store(0, std::memory_order_relaxed);
@@ -156,20 +196,20 @@ struct ReplayWriter::Impl {
     // â”€â”€ worker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     void get(std::size_t at, void* data, std::size_t n) const {
         if (!n) return;
-        const std::size_t first = std::min(n, kQueueBytes - at);
+        const std::size_t first = std::min(n, queue_bytes - at);
         std::memcpy(data, ring.data() + at, first);
         if (n > first)
             std::memcpy(static_cast<std::uint8_t*>(data) + first, ring.data(),
                         n - first);
     }
     void hash_ring(ReplayHash& h, std::size_t at, std::size_t n) const {
-        const std::size_t first = std::min(n, kQueueBytes - at);
+        const std::size_t first = std::min(n, queue_bytes - at);
         h.update(ring.data() + at, first);
         if (n > first) h.update(ring.data(), n - first);
     }
     bool write_ring(std::FILE* f, std::size_t at, std::size_t n) const {
         if (!f) return false;
-        const std::size_t first = std::min(n, kQueueBytes - at);
+        const std::size_t first = std::min(n, queue_bytes - at);
         if (first && std::fwrite(ring.data() + at, 1, first, f) != first)
             return false;
         return n == first ||
@@ -187,6 +227,7 @@ struct ReplayWriter::Impl {
         return s;
     }
     static bool copy_optional(const std::string& source, const std::string& dest) {
+        if (source.empty()) return true;
         std::FILE* in = std::fopen(source.c_str(), "rb");
         if (!in) return errno == ENOENT;
         std::FILE* out = std::fopen(dest.c_str(), "wb");
@@ -226,7 +267,7 @@ struct ReplayWriter::Impl {
             if (write_pos.load(std::memory_order_acquire) != tail) {
                 Command c;
                 get(tail, &c, sizeof(c));
-                std::size_t at = (tail + sizeof(c)) % kQueueBytes;
+                std::size_t at = (tail + sizeof(c)) % queue_bytes;
                 bool ok = true;
                 switch (c.op) {
                 case BEGIN: {
@@ -239,8 +280,9 @@ struct ReplayWriter::Impl {
                     offset = 0;
                     std::memset(last_hash, 0, sizeof(last_hash));
                     if (!ok) break;
+                    if(format==Format::Genesis32 && !rotate_history(path.c_str())) {ok=false;break;}
                     text = std::fopen(path.c_str(), "wb");
-                    states = std::fopen((path + ".state").c_str(), "wb");
+                    states = std::fopen((path + (format==Format::Genesis32?".sav":".state")).c_str(), "wb");
                     ok = text && states &&
                          !std::setvbuf(text, text_buffer.data(), _IOFBF, kFileBuffer) &&
                          !std::setvbuf(states, state_buffer.data(), _IOFBF, kFileBuffer) &&
@@ -269,14 +311,17 @@ struct ReplayWriter::Impl {
                 }
                 case SNAPSHOT: {
                     ok = write_ring(states, at, static_cast<std::size_t>(c.size));
-                    ReplayHash h;
-                    hash_ring(h, at, static_cast<std::size_t>(c.size));
-                    ok = ok && text &&
-                         std::fprintf(text, "S %llu %llu %016llx %c\n",
-                                      static_cast<unsigned long long>(offset),
-                                      static_cast<unsigned long long>(c.size),
-                                      static_cast<unsigned long long>(h.finish()),
-                                      static_cast<char>(c.kind)) >= 0;
+                    if(format==Format::Genesis32) {
+                        uint32_t hash=2166136261u;
+                        for(size_t i=0;i<c.size;++i)hash=(hash^ring[(at+i)%queue_bytes])*16777619u;
+                        ok=ok&&text&&std::fprintf(text,"S %llu %llu %08x\n",
+                            (unsigned long long)offset,(unsigned long long)c.size,hash)>=0;
+                    } else {
+                        ReplayHash h;hash_ring(h,at,static_cast<std::size_t>(c.size));
+                        ok=ok&&text&&std::fprintf(text,"S %llu %llu %016llx %c\n",
+                            (unsigned long long)offset,(unsigned long long)c.size,
+                            (unsigned long long)h.finish(),static_cast<char>(c.kind))>=0;
+                    }
                     offset += c.size;
                     break;
                 }
@@ -292,7 +337,7 @@ struct ReplayWriter::Impl {
                         if (!(c.reuse_mask & (1u << i))) {
                             ReplayHash h;
                             hash_ring(h, at, static_cast<std::size_t>(c.sizes[i]));
-                            at = (at + c.sizes[i]) % kQueueBytes;
+                            at = (at + c.sizes[i]) % queue_bytes;
                             last_hash[i] = h.finish();
                         }
                         ok = std::fprintf(text, " %016llx",
@@ -317,7 +362,7 @@ struct ReplayWriter::Impl {
                 if (!ok) { fail(IO); break; }
                 // The payload stays owned until disk I/O and hashing finish;
                 // the producer refuses work at capacity rather than waiting.
-                tail = (tail + sizeof(c) + static_cast<std::size_t>(c.size)) % kQueueBytes;
+                tail = (tail + sizeof(c) + static_cast<std::size_t>(c.size)) % queue_bytes;
                 read_pos.store(tail, std::memory_order_release);
                 dirty = text != nullptr;
             } else {
@@ -342,11 +387,11 @@ struct ReplayWriter::Impl {
     }
 };
 
-ReplayWriter::ReplayWriter() : impl_(new Impl) {}
+ReplayWriter::ReplayWriter(Format f) : impl_(new Impl(f)) {}
 
-std::unique_ptr<ReplayWriter> ReplayWriter::create() {
+std::unique_ptr<ReplayWriter> ReplayWriter::create(Format format) {
 #if RECOMP_DIAGNOSTICS_REPLAY_WRITER_THREADS
-    std::unique_ptr<ReplayWriter> w(new ReplayWriter);
+    std::unique_ptr<ReplayWriter> w(new ReplayWriter(format));
     try {
         Impl* impl = w->impl_.get();
         impl->thread = std::thread([impl] { impl->run(); });
@@ -374,7 +419,7 @@ void append_string(std::vector<std::uint8_t>& blob, const std::string& s) {
 bool ReplayWriter::begin(const std::string& path, const std::string& header,
                          const std::vector<Sidecar>& sidecars,
                          const std::vector<Sidecar>& inline_texts) {
-    constexpr std::size_t max_payload = kQueueBytes - sizeof(Command) - 1;
+    const std::size_t max_payload = impl_->queue_bytes - sizeof(Command) - 1;
     std::size_t total = 8;
     auto fits = [&](const std::string& value) {
         if (total > max_payload-4 || value.size() > max_payload-total-4) return false;
@@ -444,7 +489,7 @@ bool ReplayWriter::frame(std::uint64_t frame, const Part* parts, unsigned count)
             c.reuse_mask |= 1u << i;
             continue;
         }
-        constexpr std::size_t max_payload = kQueueBytes - sizeof(Command) - 1;
+        const std::size_t max_payload = impl_->queue_bytes - sizeof(Command) - 1;
         if(parts[i].size > max_payload-c.size){impl_->fail(INVALID);return false;}
         c.sizes[i] = parts[i].size;
         c.size += parts[i].size;

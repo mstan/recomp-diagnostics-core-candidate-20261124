@@ -32,6 +32,8 @@ struct DiagServer {
     uint16_t port;
     DiagStream stream;
     Command* commands;
+    DiagCommand raw;void* raw_user;int disconnect;
+    size_t line_limit,output_limit;DiagCommand framing_error;void* framing_user;
 };
 static int nonblocking(sock_t fd) {
 #ifdef _WIN32
@@ -95,8 +97,29 @@ bool diag_server_reply(DiagServer* s,const char* text) {
     if(!s || !text || s->client==BAD_SOCKET)return false;
     vb_stream_queue(&s->stream,text);return !s->stream.failed;
 }
+bool diag_server_protocol(DiagServer*s,size_t line,size_t output,DiagCommand error,void*user){
+ if(!s||s->client!=BAD_SOCKET||!line||line>=sizeof s->stream.input||!output||output>64u*1024u*1024u)return false;
+ s->line_limit=line;s->output_limit=output;s->framing_error=error;s->framing_user=user;return true;
+}
+static void framing_error(void*user,const char*reason){DiagServer*s=user;if(s->framing_error)s->framing_error(s->framing_user,s,reason);}
+static void stream_open(DiagServer*s){
+ vb_stream_reset(&s->stream);s->stream.line_limit=s->line_limit;s->stream.output_limit=s->output_limit;
+ if(s->framing_error){s->stream.invalid=framing_error;s->stream.invalid_user=s;}
+}
+bool diag_server_raw_handler(DiagServer*s,DiagCommand cb,void*user){
+ if(!s||!cb)return false;s->raw=cb;s->raw_user=user;return true;
+}
+bool diag_server_connected(const DiagServer*s){return s&&s->client!=BAD_SOCKET&&!s->disconnect;}
+void diag_server_disconnect(DiagServer*s){if(s)s->disconnect=1;}
+bool diag_server_write(DiagServer*s,const char*bytes,size_t n){
+ if(!diag_server_connected(s)||(!bytes&&n))return false;
+ vb_stream_queue_bytes(&s->stream,bytes,n);return !s->stream.failed;
+}
 static void dispatch(void* user,char* line) {
-    DiagServer* s=user;char* arguments=strchr(line,' ');
+    DiagServer* s=user;
+    if(s->disconnect)return;
+    if(s->raw){s->raw(s->raw_user,s,line);return;}
+    char* arguments=strchr(line,' ');
     if(arguments){*arguments++=0;while(*arguments==' ')++arguments;}else arguments=line+strlen(line);
     if(!strcmp(line,"capabilities")) {
         size_t size=32;for(Command* p=s->commands;p;p=p->next)size+=strlen(p->name)+3;
@@ -118,11 +141,11 @@ bool diag_server_poll(DiagServer* s) {
             int no_sigpipe=1;
             if(setsockopt(client,SOL_SOCKET,SO_NOSIGPIPE,&no_sigpipe,sizeof(no_sigpipe))!=0){close_socket(client);return false;}
 #endif
-            s->client=client;vb_stream_reset(&s->stream);
+            s->client=client;s->disconnect=0;stream_open(s);
         }else if(!vb_stream_would_block())return false;
     }
-    if(s->client!=BAD_SOCKET && !vb_stream_poll(&s->stream,s->client,dispatch,s)) {
-        close_socket(s->client);s->client=BAD_SOCKET;vb_stream_reset(&s->stream);
+    if(s->client!=BAD_SOCKET && (s->disconnect || !vb_stream_poll(&s->stream,s->client,dispatch,s) || s->disconnect)) {
+        close_socket(s->client);s->client=BAD_SOCKET;s->disconnect=0;vb_stream_reset(&s->stream);
     }
     return true;
 }
