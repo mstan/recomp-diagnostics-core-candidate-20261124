@@ -64,8 +64,11 @@ public:
     };
 
     // Null when the host cannot run a worker thread.
-    enum class Format { Hashed64, Genesis32 };
+    enum class Format { Hashed64, Genesis32, Snes32 };
     static std::unique_ptr<ReplayWriter> create(Format format=Format::Hashed64);
+    // Zero retains the profile default; a caller may choose a smaller bounded
+    // queue without changing recording format or worker ownership.
+    static std::unique_ptr<ReplayWriter> create_with_capacity(Format, std::size_t queue_bytes);
     ~ReplayWriter();
     ReplayWriter(const ReplayWriter&) = delete;
     ReplayWriter& operator=(const ReplayWriter&) = delete;
@@ -77,6 +80,9 @@ public:
                const std::vector<Sidecar>& inline_texts);
     // Appends a checkpoint blob and its "S <offset> <size> <hash> <kind>" line.
     bool snapshot(const void* data, std::size_t size, char kind);
+    // Append raw checkpoint bytes without adding a text record. begin() has
+    // already truncated the checkpoint file; one initial blob needs no offset.
+    bool snapshot_raw(const void* data, std::size_t size);
     bool line(const std::string& text);
     // Emits "H <frame> <h0> ... <hN-1>" once the worker hashed the parts.
     bool frame(std::uint64_t frame, const Part* parts, unsigned count);
@@ -92,7 +98,7 @@ public:
     const char* shutdown();
 
 private:
-    explicit ReplayWriter(Format);
+    explicit ReplayWriter(Format, std::size_t queue_bytes=0);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
