@@ -30,5 +30,24 @@ int main(){DiagServer*s=diag_server_create(0);CHECK(s && diag_server_port(s));St
  // Service disconnect and prove a clean connection can register input again.
  CHECK(diag_server_poll(s));done=false;
  std::thread second([&]{Socket fd=connect_to(diag_server_port(s));send_all(fd,std::string("echo reconnect")+char(10));CHECK(line(fd)=="reconnect");CLOSE(fd);done=true;});
- while(!done){CHECK(diag_server_poll(s));std::this_thread::yield();}second.join();CHECK(state.calls==3);diag_server_destroy(s);return 0;
+ while(!done){CHECK(diag_server_poll(s));std::this_thread::yield();}second.join();CHECK(state.calls==3);diag_server_destroy(s);
+ // Four concurrent tools retain independent partial lines and response queues.
+ s=diag_server_create(0);CHECK(s);state.calls=0;
+ CHECK(!diag_server_client_limit(s,0) && !diag_server_client_limit(s,5));
+ CHECK(diag_server_client_limit(s,4));CHECK(diag_server_register(s,"echo",echo,&state));done=false;
+ std::thread parallel([&]{
+  Socket clients[4];for(unsigned i=0;i<4;++i)clients[i]=connect_to(diag_server_port(s));
+  for(unsigned i=0;i<4;++i)send_all(clients[i],"echo client");
+  for(unsigned i=0;i<4;++i)send_all(clients[i],std::to_string(i)+"\n");
+  for(unsigned i=0;i<4;++i)CHECK(line(clients[i])=="client"+std::to_string(i));
+  // An oversized line disconnects only that client, without poisoning peers.
+  send_all(clients[0],std::string(8192,'x')+"\n");char byte;
+  CHECK(recv(clients[0],&byte,1,0)<=0);CLOSE(clients[0]);
+  for(unsigned i=1;i<4;++i){send_all(clients[i],"echo retained\n");CHECK(line(clients[i])=="retained");}
+  clients[0]=connect_to(diag_server_port(s));send_all(clients[0],"echo replacement\n");
+  CHECK(line(clients[0])=="replacement");
+  for(auto client:clients)CLOSE(client);done=true;
+ });
+ while(!done){CHECK(diag_server_poll(s));std::this_thread::yield();}
+ parallel.join();CHECK(state.calls==8);diag_server_destroy(s);return 0;
 }
