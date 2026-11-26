@@ -57,6 +57,14 @@ DiagServer* diag_server_create(uint16_t port) {
     }
     s->client=BAD_SOCKET;
     s->listener=socket(AF_INET,SOCK_STREAM,0);
+#ifdef _WIN32
+    /* Prevent an SO_REUSEADDR listener from taking an active debug endpoint. */
+    const int exclusive=1;
+    if(s->listener!=BAD_SOCKET && setsockopt(s->listener,SOL_SOCKET,SO_EXCLUSIVEADDRUSE,
+       (const char*)&exclusive,sizeof(exclusive))!=0) {
+        diag_server_destroy(s);return NULL;
+    }
+#endif
     struct sockaddr_in address={0}; address.sin_family=AF_INET;
     address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);address.sin_port=htons(port);
     if(s->listener==BAD_SOCKET || !nonblocking(s->listener) ||
