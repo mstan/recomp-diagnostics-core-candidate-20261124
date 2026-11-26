@@ -28,6 +28,9 @@ bool diag_server_protocol(DiagServer*,size_t line_bytes,size_t response_bytes,
 bool diag_server_raw_handler(DiagServer*,DiagCommand,void* user);
 bool diag_server_write(DiagServer*,const char* bytes,size_t size);
 bool diag_server_connected(const DiagServer*);
+/* Unsent userspace bytes. Continue polling to drain before graceful shutdown;
+ * zero means handed to the socket, not acknowledgement by the remote peer. */
+size_t diag_server_pending_output(const DiagServer*);
 /* Deferred until the current poll returns; safe within a command callback. */
 void diag_server_disconnect(DiagServer*);
 bool diag_server_poll(DiagServer*);

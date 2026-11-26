@@ -111,6 +111,7 @@ bool diag_server_raw_handler(DiagServer*s,DiagCommand cb,void*user){
 }
 bool diag_server_connected(const DiagServer*s){return s&&s->client!=BAD_SOCKET&&!s->disconnect;}
 void diag_server_disconnect(DiagServer*s){if(s)s->disconnect=1;}
+size_t diag_server_pending_output(const DiagServer*s){return s?s->stream.size-s->stream.sent:0;}
 bool diag_server_write(DiagServer*s,const char*bytes,size_t n){
  if(!diag_server_connected(s)||(!bytes&&n))return false;
  vb_stream_queue_bytes(&s->stream,bytes,n);return !s->stream.failed;
