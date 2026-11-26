@@ -98,7 +98,7 @@ bool diag_server_reply(DiagServer* s,const char* text) {
     vb_stream_queue(&s->stream,text);return !s->stream.failed;
 }
 bool diag_server_protocol(DiagServer*s,size_t line,size_t output,DiagCommand error,void*user){
- if(!s||s->client!=BAD_SOCKET||!line||line>=sizeof s->stream.input||!output||output>64u*1024u*1024u)return false;
+ if(!s||s->client!=BAD_SOCKET||!line||line>16u*1024u*1024u||!output||output>64u*1024u*1024u)return false;
  s->line_limit=line;s->output_limit=output;s->framing_error=error;s->framing_user=user;return true;
 }
 static void framing_error(void*user,const char*reason){DiagServer*s=user;if(s->framing_error)s->framing_error(s->framing_user,s,reason);}

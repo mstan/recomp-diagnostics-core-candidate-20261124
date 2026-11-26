@@ -5,8 +5,8 @@
 #include <string.h>
 
 typedef struct {
-    char input[8192];
-    size_t used;
+    char* input;
+    size_t used,input_capacity;
     char* output;
     size_t size, sent;
     int failed,discard;
@@ -16,8 +16,22 @@ typedef struct {
 #define vb_stream (*stream)
 
 static void vb_stream_reset(DiagStream* stream) {
+    free(vb_stream.input);
     free(vb_stream.output);
     memset(&vb_stream, 0, sizeof(vb_stream));
+}
+static int vb_stream_reserve_input(DiagStream* stream,size_t needed,size_t limit) {
+    if(needed<=vb_stream.input_capacity)return 1;
+    size_t capacity=vb_stream.input_capacity?vb_stream.input_capacity:8192u;
+    while(capacity<needed) {
+        if(capacity>(limit+1u)/2u){capacity=limit+1u;break;}
+        capacity*=2u;
+    }
+    if(capacity>limit+1u)capacity=limit+1u;
+    if(capacity<needed)return 0;
+    char* input=(char*)realloc(vb_stream.input,capacity);
+    if(!input)return 0;
+    vb_stream.input=input;vb_stream.input_capacity=capacity;return 1;
 }
 static void vb_stream_queue_bytes(DiagStream* stream,const char* body,size_t n) {
     if (vb_stream.failed) return;
@@ -73,17 +87,20 @@ static int vb_stream_poll(DiagStream* stream, sock_t client, void (*dispatch)(vo
             if(vb_stream.discard){vb_stream.discard=0;vb_stream.used=0;continue;}
             if (vb_stream.used && vb_stream.input[vb_stream.used - 1] == '\r')
                 --vb_stream.used;
+            size_t limit=vb_stream.line_limit?vb_stream.line_limit:8191u;
+            if(!vb_stream_reserve_input(stream,vb_stream.used+1u,limit))return 0;
             vb_stream.input[vb_stream.used] = 0;
             if (vb_stream.used) dispatch(user,vb_stream.input);
             vb_stream.used = 0;
         } else {
             if(vb_stream.discard)continue;
-            size_t limit=vb_stream.line_limit?vb_stream.line_limit:sizeof(vb_stream.input)-1;
+            size_t limit=vb_stream.line_limit?vb_stream.line_limit:8191u;
             if(!chunk[i] || vb_stream.used==limit) {
                 if(!vb_stream.invalid)return 0;
                 vb_stream.invalid(vb_stream.invalid_user,!chunk[i]?"NUL byte in command line":"command line too long");
                 vb_stream.used=0;vb_stream.discard=1;continue;
             }
+            if(!vb_stream_reserve_input(stream,vb_stream.used+2u,limit))return 0;
             vb_stream.input[vb_stream.used++] = chunk[i];
         }
     }

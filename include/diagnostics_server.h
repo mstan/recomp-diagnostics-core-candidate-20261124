@@ -18,9 +18,11 @@ bool diag_server_register(DiagServer*,const char* name,DiagCommand,void* user);
 /* Alternate complete-line dispatcher for an existing engine protocol. It
  * owns parsing; named-command dispatch is bypassed. Same callback rules. */
 /* Configure a fixed raw-protocol limit/error profile before any client.
+ * The default line limit remains8191 bytes. Explicit profiles allow up to
+ *16MiB, grown on demand per connection; response hard bounds remain64MiB.
  * An error handler receives a malformed-line reason; that line is discarded
  * through its newline and the connection remains usable. Without it malformed
- * framing closes the client. Limits cannot exceed the default hard bounds. */
+ * framing closes the client. Limits cannot exceed these hard bounds. */
 bool diag_server_protocol(DiagServer*,size_t line_bytes,size_t response_bytes,
                            DiagCommand framing_error,void* user);
 bool diag_server_raw_handler(DiagServer*,DiagCommand,void* user);
