@@ -1,4 +1,4 @@
-/* Shared nonblocking line framing. Each server owns one instance. */
+/* Shared nonblocking line framing. Each connection owns one instance. */
 #ifndef VB_DEBUG_STREAM_H
 #define VB_DEBUG_STREAM_H
 #include <stdlib.h>

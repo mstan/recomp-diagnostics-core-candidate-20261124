@@ -14,6 +14,10 @@ typedef void (*DiagCommand)(void* user,DiagServer*,const char* arguments);
 DiagServer* diag_server_create(uint16_t port);
 void diag_server_destroy(DiagServer*);
 uint16_t diag_server_port(const DiagServer*);
+/* Fixed before connecting: one client by default, up to four for engines with
+ * simultaneous native tools. Replies/disconnects inside callbacks address
+ * only that request's client. Other clients retain independent framing. */
+bool diag_server_client_limit(DiagServer*,unsigned clients);
 bool diag_server_register(DiagServer*,const char* name,DiagCommand,void* user);
 /* Alternate complete-line dispatcher for an existing engine protocol. It
  * owns parsing; named-command dispatch is bypassed. Same callback rules. */
