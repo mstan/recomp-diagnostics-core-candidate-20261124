@@ -29,3 +29,29 @@ a time cutoff. Reports read only registered diagnostic files and accept
 sanitized metadata, opaque checkpoints and screenshots from callers. They do
 not discover original images, profile files or native saves. Recording's
 visible mod and persisted on/off setting remain the consumer's UI contract.
+# Opaque native recorder profiles
+
+`recomp_diagnostics/opaque_writer.hpp` owns a single bounded worker and up to
+32 declared opaque streams. Immutable native codecs run on that worker;
+the provider owns admission, file handles, periodic flush, error state and drain.
+The C facade is in `opaque_writer.h`. Existing replay, Session and mailbox APIs
+are retained.
+
+| Profile | Queue | Admitted stream data | Other existing limits |
+| --- | --- | --- | --- |
+| PSP | 16 MiB / 4096 queued rows; in-flight bytes remain charged | 64 MiB events / 216000 frame records | 64 MiB artifact / 192 MiB private session; retain existing sessions |
+| Dreamcast | 1 MiB; release bytes at dequeue | 64 MiB aggregate across four streams | Separate 64 MiB attachment partition; four owned sessions |
+| PS2 | 4096 queued events | Charge actual encoded bytes | 32 MiB session with 4096-byte final reserve; four owned sessions |
+
+The writer enforces queue, admitted-data, encoded-write and attachment limits.
+The PSP adapter uses `ArtifactBudget` at its existing manifest boundary for
+per-file and total artifact validation. PS2 supplies the native seed/identity
+byte count when opening streams; encoded writes share the remaining budget,
+and its native final status uses the reserved space. Declared artifact/session
+profile values do not impose an additional implicit per-stream limit.
+
+Native seed formats, event codecs, guest callback timing and export allowlists
+remain in adapters. Opaque files and attachments are private by default; this
+API creates no report export. The shared history owner validates a complete
+allowlisted tree before removing files, preserves unknown/reparse/protected
+content, and supports an exclusive, non-waiting admission-directory lifetime.
