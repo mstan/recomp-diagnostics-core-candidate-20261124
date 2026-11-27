@@ -22,8 +22,9 @@ int rd_opaque_writer_open(rd_opaque_writer *, const char *directory,
                           const rd_opaque_stream *, size_t count,
                           uint64_t initial_bytes);
 /* Always consumes record, including on admission/allocation failure. encode
- * runs only on the shared worker; release runs exactly once. Do not reenter
- * the writer from encode/release. The borrowed sink lives for this call only.
+ * runs only on the shared worker; release runs exactly once. encode may observe
+ * written/error but may not recursively push or control writer lifetime.
+ * release must not reenter the writer. The sink lives for this call only.
  */
 int rd_opaque_writer_push(rd_opaque_writer *, void *record, rd_opaque_encode,
                           rd_opaque_release, size_t queue_bytes,
