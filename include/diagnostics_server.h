@@ -14,7 +14,7 @@ typedef void (*DiagCommand)(void* user,DiagServer*,const char* arguments);
 DiagServer* diag_server_create(uint16_t port);
 void diag_server_destroy(DiagServer*);
 uint16_t diag_server_port(const DiagServer*);
-/* Fixed before connecting: one client by default, up to four for engines with
+/* Fixed before connecting: one client by default, up to eight for engines with
  * simultaneous native tools. Replies/disconnects inside callbacks address
  * only that request's client. Other clients retain independent framing. */
 bool diag_server_client_limit(DiagServer*,unsigned clients);
@@ -37,6 +37,11 @@ bool diag_server_connected(const DiagServer*);
 size_t diag_server_pending_output(const DiagServer*);
 /* Deferred until the current poll returns; safe within a command callback. */
 void diag_server_disconnect(DiagServer*);
+/* Finish the active reply, then close only its connection. */
+void diag_server_close_after_reply(DiagServer*);
+/* Dispatch callback only: run once after this client's currently queued reply
+ * bytes reach the socket, independently of other clients. Same callback rules. */
+bool diag_server_after_reply(DiagServer*,void (*callback)(void*),void* user);
 bool diag_server_poll(DiagServer*);
 /* One newline is appended. Responses are bounded to 64 MiB per connection. */
 bool diag_server_reply(DiagServer*,const char* text);

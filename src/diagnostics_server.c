@@ -30,12 +30,15 @@ typedef struct Command {
 typedef struct Peer {
     sock_t socket;
     DiagStream stream;
-    int disconnect;
+    int disconnect, close_after_reply;
+    void (*after_reply)(void*);
+    void* after_user;
+    uint64_t after_target;
 } Peer;
 struct DiagServer {
     sock_t listener;
     uint16_t port;
-    Peer peers[4];
+    Peer peers[8];
     unsigned client_limit;
     Peer* active;
     Command* commands;
@@ -62,7 +65,7 @@ DiagServer* diag_server_create(uint16_t port) {
 #endif
         return NULL;
     }
-    for(unsigned i=0;i<4;++i)s->peers[i].socket=BAD_SOCKET;
+    for(unsigned i=0;i<8;++i)s->peers[i].socket=BAD_SOCKET;
     s->client_limit=1;
     s->listener=socket(AF_INET,SOCK_STREAM,0);
 #ifdef _WIN32
@@ -76,7 +79,7 @@ DiagServer* diag_server_create(uint16_t port) {
     struct sockaddr_in address={0}; address.sin_family=AF_INET;
     address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);address.sin_port=htons(port);
     if(s->listener==BAD_SOCKET || !nonblocking(s->listener) ||
-       bind(s->listener,(struct sockaddr*)&address,sizeof address)!=0 || listen(s->listener,4)!=0) {
+       bind(s->listener,(struct sockaddr*)&address,sizeof address)!=0 || listen(s->listener,8)!=0) {
         diag_server_destroy(s);return NULL;
     }
 #ifdef _WIN32
@@ -90,7 +93,7 @@ DiagServer* diag_server_create(uint16_t port) {
 void diag_server_destroy(DiagServer* s) {
     if(!s)return;
     if(s->listener!=BAD_SOCKET)close_socket(s->listener);
-    for(unsigned i=0;i<4;++i) {
+    for(unsigned i=0;i<8;++i) {
         if(s->peers[i].socket!=BAD_SOCKET)close_socket(s->peers[i].socket);
         vb_stream_reset(&s->peers[i].stream);
     }
@@ -110,7 +113,7 @@ static Peer* reply_peer(DiagServer* s) {
     return NULL;
 }
 bool diag_server_client_limit(DiagServer* s,unsigned clients) {
-    if(!s || !clients || clients>4 || diag_server_connected(s))return false;
+    if(!s || !clients || clients>8 || diag_server_connected(s))return false;
     s->client_limit=clients;return true;
 }
 bool diag_server_register(DiagServer* s,const char* name,DiagCommand cb,void* user) {
@@ -147,6 +150,11 @@ bool diag_server_connected(const DiagServer*s){
  return false;
 }
 void diag_server_disconnect(DiagServer*s){Peer*p=reply_peer(s);if(p)p->disconnect=1;}
+void diag_server_close_after_reply(DiagServer*s){Peer*p=reply_peer(s);if(p)p->close_after_reply=1;}
+bool diag_server_after_reply(DiagServer*s,void(*callback)(void*),void*user){
+ if(!s||!s->active||!callback||s->active->after_reply)return false;
+ Peer*p=s->active;p->after_reply=callback;p->after_user=user;p->after_target=p->stream.queued_total;return true;
+}
 size_t diag_server_pending_output(const DiagServer*s){
  size_t pending=0;if(s)for(unsigned i=0;i<s->client_limit;++i)
   pending+=s->peers[i].stream.size-s->peers[i].stream.sent;
@@ -158,7 +166,7 @@ bool diag_server_write(DiagServer*s,const char*bytes,size_t n){
 }
 static void dispatch(void* user,char* line) {
     DiagServer* s=user;
-    if(!s->active || s->active->disconnect)return;
+    if(!s->active || s->active->disconnect || s->active->close_after_reply)return;
     if(s->raw){s->raw(s->raw_user,s,line);return;}
     char* arguments=strchr(line,' ');
     if(arguments){*arguments++=0;while(*arguments==' ')++arguments;}else arguments=line+strlen(line);
@@ -184,7 +192,7 @@ bool diag_server_poll(DiagServer* s) {
             int no_sigpipe=1;
             if(setsockopt(client,SOL_SOCKET,SO_NOSIGPIPE,&no_sigpipe,sizeof(no_sigpipe))!=0){close_socket(client);return false;}
 #endif
-            p->socket=client;p->disconnect=0;stream_open(s,p);
+            p->socket=client;p->disconnect=0;p->close_after_reply=0;p->after_reply=NULL;stream_open(s,p);
         }else {
             if(!vb_stream_would_block())return false;
             break;
@@ -194,7 +202,11 @@ bool diag_server_poll(DiagServer* s) {
         Peer* p=s->peers+i;
         if(p->socket==BAD_SOCKET)continue;
         s->active=p;
-        if(p->disconnect || !vb_stream_poll(&p->stream,p->socket,dispatch,s) || p->disconnect) {
+        int usable=!p->disconnect&&vb_stream_poll(&p->stream,p->socket,dispatch,s)&&!p->disconnect;
+        if(usable&&p->after_reply&&p->stream.sent_total>=p->after_target){
+            void(*callback)(void*)=p->after_reply;void*user=p->after_user;p->after_reply=NULL;callback(user);
+        }
+        if(!usable || p->disconnect || (p->close_after_reply && p->stream.size==p->stream.sent)) {
             close_socket(p->socket);p->socket=BAD_SOCKET;p->disconnect=0;vb_stream_reset(&p->stream);
         }
         s->active=NULL;

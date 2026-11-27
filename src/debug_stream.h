@@ -3,12 +3,14 @@
 #define VB_DEBUG_STREAM_H
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 typedef struct {
     char* input;
     size_t used,input_capacity;
     char* output;
     size_t size, sent;
+    uint64_t queued_total, sent_total;
     int failed,discard;
     size_t line_limit,output_limit;
     void (*invalid)(void*,const char*);void* invalid_user;
@@ -42,7 +44,7 @@ static void vb_stream_queue_bytes(DiagStream* stream,const char* body,size_t n) 
     if(!n)return;
     char* next=(char*)realloc(vb_stream.output,vb_stream.size+n);
     if(!next){vb_stream.failed=1;return;}
-    vb_stream.output=next;memcpy(next+vb_stream.size,body,n);vb_stream.size+=n;
+    vb_stream.output=next;memcpy(next+vb_stream.size,body,n);vb_stream.size+=n;vb_stream.queued_total+=n;
 }
 static void vb_stream_queue(DiagStream* stream,const char* body) {
     vb_stream_queue_bytes(stream,body,strlen(body));
@@ -69,6 +71,7 @@ static int vb_stream_flush(DiagStream* stream, sock_t client) {
         );
         if (n <= 0) return n < 0 && vb_stream_would_block();
         vb_stream.sent += (size_t)n;
+        vb_stream.sent_total += (size_t)n;
     }
     free(vb_stream.output);
     vb_stream.output = NULL;
