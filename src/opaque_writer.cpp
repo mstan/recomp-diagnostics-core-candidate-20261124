@@ -251,6 +251,8 @@ bool OpaqueWriter::open(const fs::path &directory, OpaqueProfile profile,
     return false;
   }
   try {
+    // Allocate handle storage before acquiring any native file handles.
+    p.files.reserve(streams.size());
     std::vector<std::string> names;
     for (const auto &stream : streams) {
       if (!flat(stream.name) ||
