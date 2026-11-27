@@ -71,8 +71,8 @@ int main(){DiagServer*s=diag_server_create(0);CHECK(s && diag_server_port(s));St
  s=diag_server_create(0);CHECK(s);CHECK(diag_server_client_limit(s,2));
  CHECK(diag_server_register(s,"slow",slow,&state));CHECK(diag_server_register(s,"after",after,&state));done=false;
  std::thread independent([&]{
-  Socket blocked=connect_to(diag_server_port(s));int small=1024;
-  CHECK(setsockopt(blocked,SOL_SOCKET,SO_RCVBUF,reinterpret_cast<const char*>(&small),sizeof(small))==0);
+  Socket blocked=connect_to(diag_server_port(s));int receive_buffer=1024;
+  CHECK(setsockopt(blocked,SOL_SOCKET,SO_RCVBUF,reinterpret_cast<const char*>(&receive_buffer),sizeof(receive_buffer))==0);
   Socket completing=connect_to(diag_server_port(s));send_all(blocked,"slow\n");send_all(completing,"after\n");
   CHECK(line(completing)=="ack");auto observed=state.polls.load();
   while(state.polls.load()<observed+2u)std::this_thread::yield();

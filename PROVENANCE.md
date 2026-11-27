@@ -12,3 +12,11 @@ checkpoint-text segment policy derives from `gbarecomp` at
 `481b800ebeecc7f3ac1e27af104b0fe0b301b9ab`. Guest state/input codecs remain
 in their engine adapters. The extracted session code is covered by the
 owner contribution grant in LICENSE-SCOPE.md; donor notices remain intact.
+
+The segmented single-producer trace profile derives from Matthew Stanley's
+`snesrecomp` diagnostic trace writer at
+`c8ef5e17b37c21a4a47a4ae8039ad3a7d9f037c2`. It retains that implementation's
+byte-ring admission, file rotation, retention and lifecycle contract, with
+host timing supplied through optional callbacks. The extracted code and its
+new reusable interface are covered by the owner contribution grant in
+LICENSE-SCOPE.md.

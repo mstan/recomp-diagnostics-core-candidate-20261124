@@ -2,7 +2,7 @@
 
 Current licensing and the grant for existing owner contributions are documented in [LICENSE-SCOPE.md](LICENSE-SCOPE.md).
 
-Private engine-neutral diagnostics transport and replay writer extracted from working engine machinery. The server binds loopback, owns bounded nonblocking line framing, and advertises registered commands. Engines supply owner-thread callbacks for pause/resume, memory, input and screenshots; no guest state is inferred here. Replies retain the existing line protocol. Each server owns its connection buffers.
+Engine-neutral diagnostics transport and replay writer extracted from working engine machinery. The server binds loopback, owns bounded nonblocking line framing, and advertises registered commands. Engines supply owner-thread callbacks for pause/resume, memory, input and screenshots; no guest state is inferred here. Replies retain the existing line protocol. Each server owns its connection buffers.
 
 The existing bounded replay worker retains its checkpoint/text/frame-hash container, recoverable backpressure and sticky errors. Hosts supply build/image/settings identity in the header and opaque checkpoint bytes. ReplayHash is a host-local diagnostic fingerprint, not a cryptographic identity. The later engine adapter must expose diagnostics and recording as a visible mod, recording enabled by default while preserving saved choices. This package does not change any consumer or claim replay determinism until integration.
 
@@ -55,3 +55,17 @@ remain in adapters. Opaque files and attachments are private by default; this
 API creates no report export. The shared history owner validates a complete
 allowlisted tree before removing files, preserves unknown/reparse/protected
 content, and supports an exclusive, non-waiting admission-directory lifetime.
+
+## Segmented trace byte profile
+
+`recomp_diagnostics/trace_writer.h` supplies a single-producer byte-ring profile
+for complete opaque rows. Its default 4 MiB queue, 8192-byte row bound, four-byte
+per-row charge and release-after-copy policy preserve the qualified SNES trace
+contract. The provider owns the worker, periodic flushing, numbered CSV segments,
+retention, first-error state and accepted-prefix drain. Admission does not allocate,
+lock, wait or access files. Close joins after the producer has stopped.
+
+Engines retain row schemas, guest observations and optional host clock/sleep
+hooks. This profile is separate from the opaque multi-producer recorder because
+that recorder's event ownership and queue accounting differ. It changes no
+recording visibility or saved-choice policy in a consumer.
