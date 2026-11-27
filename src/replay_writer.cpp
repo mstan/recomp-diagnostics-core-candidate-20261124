@@ -41,7 +41,7 @@ inline std::uint64_t load64(const std::uint8_t* p) {
     return v;  // GBA hosts are little-endian; the hash is host-local anyway.
 }
 
-enum Op : std::uint32_t { BEGIN = 1, SNAPSHOT, LINE, FRAME, REMOVE, END, SNAPSHOT_RAW };
+enum Op : std::uint32_t { BEGIN = 1, SNAPSHOT, LINE, FRAME, REMOVE, END, SNAPSHOT_RAW, TASK };
 enum StatusCode : int { OK = 0, FULL = 1, INVALID = 2, IO = 3 };
 
 struct Command {
@@ -418,11 +418,29 @@ struct ReplayWriter::Impl {
                 case END:
                     ok = close_files(text, states);
                     break;
+                case TASK: {
+                    std::function<void()>* task = nullptr;
+                    get(at, &task, sizeof task);
+                    std::unique_ptr<std::function<void()>> owned(task);
+                    // Reports observe all accepted records ahead of them,
+                    // including buffered checkpoint bytes and their text rows.
+                    try {
+                        if ((states && std::fflush(states)) || (text && std::fflush(text))) ok = false;
+                        else (*owned)();
+                    } catch (...) { ok = false; }
+                    break;
+                }
                 default:
                     ok = false;
                     break;
                 }
-                if (!ok) { fail(IO); break; }
+                if (!ok) {
+                    fail(IO);
+                    // Release this record before discarding remaining work.
+                    tail = (tail + sizeof(c) + static_cast<std::size_t>(c.size)) % queue_bytes;
+                    read_pos.store(tail, std::memory_order_release);
+                    break;
+                }
                 // The payload stays owned until disk I/O and hashing finish;
                 // the producer refuses work at capacity rather than waiting.
                 tail = (tail + sizeof(c) + static_cast<std::size_t>(c.size)) % queue_bytes;
@@ -445,6 +463,18 @@ struct ReplayWriter::Impl {
                 last_flush = now;
                 dirty = false;
             }
+        }
+        // A failed sink does not execute later jobs, but still releases every
+        // immutable capture. The producer stops enqueueing after a sticky error.
+        while (tail != write_pos.load(std::memory_order_acquire)) {
+            Command c; get(tail, &c, sizeof c);
+            if (c.op == TASK) {
+                std::function<void()>* task = nullptr;
+                get((tail + sizeof c) % queue_bytes, &task, sizeof task);
+                delete task;
+            }
+            tail = (tail + sizeof c + static_cast<std::size_t>(c.size)) % queue_bytes;
+            read_pos.store(tail, std::memory_order_release);
         }
         if (!close_files(text, states)) fail(IO);
     }
@@ -473,6 +503,39 @@ std::unique_ptr<ReplayWriter> ReplayWriter::create_with_capacity(Format format, 
 }
 
 ReplayWriter::~ReplayWriter() { shutdown(); }
+
+bool ReplayWriter::post(std::function<void()> work, std::size_t retained_bytes) {
+    auto& p = *impl_;
+    if (!work || retained_bytes > p.queue_bytes - sizeof(Command) - sizeof(void*) - 1) {
+        p.pending_need.store(p.queue_bytes, std::memory_order_relaxed);
+        return false;
+    }
+    const std::size_t payload = sizeof(void*) + retained_bytes;
+    const std::size_t need = sizeof(Command) + payload;
+    if (p.stop.load(std::memory_order_relaxed) || p.error.load(std::memory_order_relaxed) != OK)
+        return false;
+    if (need > p.free_space()) {
+        p.pending_need.store(need, std::memory_order_relaxed);
+        return false;
+    }
+    auto owned = std::make_unique<std::function<void()>>(std::move(work));
+    Command c; c.op = TASK; c.size = payload;
+    p.put(p.head, &c, sizeof c);
+    auto* task = owned.get();
+    p.put((p.head + sizeof c) % p.queue_bytes, &task, sizeof task);
+    p.head = (p.head + need) % p.queue_bytes;
+    owned.release();
+    p.pending_need.store(0, std::memory_order_relaxed);
+    p.write_pos.store(p.head, std::memory_order_release);
+    return true;
+}
+
+void ReplayWriter::drain() {
+    auto& p = *impl_;
+    while (p.read_pos.load(std::memory_order_acquire) != p.write_pos.load(std::memory_order_acquire) &&
+           p.error.load(std::memory_order_relaxed) == OK)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
 
 namespace {
 void append_string(std::vector<std::uint8_t>& blob, const std::string& s) {
@@ -623,6 +686,19 @@ const char* ReplayWriter::shutdown() {
 #if RECOMP_DIAGNOSTICS_REPLAY_WRITER_THREADS
         if (impl_->thread.joinable()) impl_->thread.join();
 #endif
+        // A producer may have published just as a worker discovered a sticky
+        // I/O error. Joining settles that race before releasing leftover jobs.
+        auto tail = impl_->read_pos.load(std::memory_order_relaxed);
+        while (tail != impl_->write_pos.load(std::memory_order_acquire)) {
+            Command c; impl_->get(tail, &c, sizeof c);
+            if (c.op == TASK) {
+                std::function<void()>* task = nullptr;
+                impl_->get((tail + sizeof c) % impl_->queue_bytes, &task, sizeof task);
+                delete task;
+            }
+            tail = (tail + sizeof c + static_cast<std::size_t>(c.size)) % impl_->queue_bytes;
+            impl_->read_pos.store(tail, std::memory_order_release);
+        }
         impl_->joined = true;
     }
     const int e = impl_->error.load(std::memory_order_relaxed);

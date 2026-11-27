@@ -23,6 +23,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -93,11 +94,17 @@ public:
     const char* error() const;
     // Bytes the ring can accept right now (producer view).
     std::size_t free_bytes() const;
+    // Normal shutdown/tests only. Waits for accepted work, with no time limit.
+    void drain();
     // Drain every accepted record, then stop and join the worker. Idempotent.
     // Returns the sticky error text, or null.
     const char* shutdown();
 
 private:
+    friend class DiagnosticSession;
+    // Internal session operations use this same worker and byte budget. The
+    // reservation includes immutable data owned by the closure until it runs.
+    bool post(std::function<void()> work, std::size_t retained_bytes);
     explicit ReplayWriter(Format, std::size_t queue_bytes=0);
     struct Impl;
     std::unique_ptr<Impl> impl_;
