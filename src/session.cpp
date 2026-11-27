@@ -232,6 +232,8 @@ struct DiagnosticSession::Impl {
   }
   void fail(std::string text) {
     active = false;
+    open = false;
+    gap = false;
     failure = std::move(text);
     std::lock_guard lock(message_mutex);
     message = "Diagnostics stopped: " + failure;
@@ -336,7 +338,7 @@ bool DiagnosticSession::begin_segment(
     const std::function<std::string(unsigned)> &header,
     const std::vector<Sidecar> &copies, const std::vector<Sidecar> &texts) {
   auto &p = *impl_;
-  if (!p.writer || !p.active)
+  if (!ready())
     return false;
   if (p.stream_open && !end())
     return false;
@@ -363,7 +365,7 @@ bool DiagnosticSession::begin_segment(
 }
 bool DiagnosticSession::snapshot(const void *b, std::size_t n, char kind) {
   auto &p = *impl_;
-  if (!p.writer || !p.active || p.history.empty())
+  if (!p.writer || !p.active || !p.open || p.history.empty())
     return false;
   if (n >= p.opt.queue_bytes / 2) {
     p.fail("machine checkpoint exceeds the replay queue");
@@ -382,11 +384,11 @@ bool DiagnosticSession::snapshot(const void *b, std::size_t n, char kind) {
 }
 bool DiagnosticSession::line(const std::string &s) {
   auto &p = *impl_;
-  return p.writer && p.active && p.accepted(p.writer->line(s));
+  return p.writer && p.active && p.open && p.accepted(p.writer->line(s));
 }
 bool DiagnosticSession::frame(std::uint64_t f, const Part *b, unsigned n) {
   auto &p = *impl_;
-  return p.writer && p.active && p.accepted(p.writer->frame(f, b, n));
+  return p.writer && p.active && p.open && p.accepted(p.writer->frame(f, b, n));
 }
 bool DiagnosticSession::end() {
   auto &p = *impl_;

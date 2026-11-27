@@ -227,8 +227,11 @@ int main() {
     CHECK(s.has_gap());
     CHECK(!s.segment_open());
     s.drain();
-    while (!s.ready())
-      std::this_thread::yield();
+    // Queue space returning never permits capture into an abandoned segment.
+    CHECK(!s.snapshot("abandoned", 9, 'C'));
+    CHECK(!s.line("abandoned\n"));
+    CHECK(!s.frame(2, nullptr, 0));
+    // begin_segment itself recovers the gap before opening a new checkpoint.
     CHECK(s.begin_segment([](unsigned) { return "FORMAT 1\n"; }, {}, {}));
     CHECK(s.snapshot("new", 3, 'R'));
     CHECK(!s.shutdown("E 1\n"));
