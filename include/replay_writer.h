@@ -23,6 +23,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -64,7 +65,11 @@ public:
     };
 
     // Null when the host cannot run a worker thread.
-    static std::unique_ptr<ReplayWriter> create();
+    enum class Format { Hashed64, Genesis32, Snes32 };
+    static std::unique_ptr<ReplayWriter> create(Format format=Format::Hashed64);
+    // Zero retains the profile default; a caller may choose a smaller bounded
+    // queue without changing recording format or worker ownership.
+    static std::unique_ptr<ReplayWriter> create_with_capacity(Format, std::size_t queue_bytes);
     ~ReplayWriter();
     ReplayWriter(const ReplayWriter&) = delete;
     ReplayWriter& operator=(const ReplayWriter&) = delete;
@@ -76,6 +81,9 @@ public:
                const std::vector<Sidecar>& inline_texts);
     // Appends a checkpoint blob and its "S <offset> <size> <hash> <kind>" line.
     bool snapshot(const void* data, std::size_t size, char kind);
+    // Append raw checkpoint bytes without adding a text record. begin() has
+    // already truncated the checkpoint file; one initial blob needs no offset.
+    bool snapshot_raw(const void* data, std::size_t size);
     bool line(const std::string& text);
     // Emits "H <frame> <h0> ... <hN-1>" once the worker hashed the parts.
     bool frame(std::uint64_t frame, const Part* parts, unsigned count);
@@ -86,12 +94,18 @@ public:
     const char* error() const;
     // Bytes the ring can accept right now (producer view).
     std::size_t free_bytes() const;
+    // Normal shutdown/tests only. Waits for accepted work, with no time limit.
+    void drain();
     // Drain every accepted record, then stop and join the worker. Idempotent.
     // Returns the sticky error text, or null.
     const char* shutdown();
 
 private:
-    ReplayWriter();
+    friend class DiagnosticSession;
+    // Internal session operations use this same worker and byte budget. The
+    // reservation includes immutable data owned by the closure until it runs.
+    bool post(std::function<void()> work, std::size_t retained_bytes);
+    explicit ReplayWriter(Format, std::size_t queue_bytes=0);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
