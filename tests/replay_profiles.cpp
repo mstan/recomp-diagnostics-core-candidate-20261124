@@ -51,8 +51,13 @@ int main() {
 #else
  setenv("RECOMP_DIAGNOSTICS_TEST_WRITER_START_DELAY_US","200000",1);
 #endif
- w=recomp_replay_create_profile(RECOMP_REPLAY_HASHED64,4096);CHECK(w);CHECK(recomp_replay_begin_with_sidecars(w,raw.c_str(),"bounded\n",nullptr,0,nullptr,0));
- std::string row(2500,'a');CHECK(recomp_replay_line(w,row.c_str()));CHECK(!recomp_replay_line(w,row.c_str()));CHECK(recomp_replay_error(w));CHECK(!recomp_replay_end(w));CHECK(recomp_replay_destroy(w));
+ for(auto format:{RECOMP_REPLAY_HASHED64,RECOMP_REPLAY_SNES32}) {
+  auto bounded=utf8(root/(format==RECOMP_REPLAY_SNES32?"bounded-snes":"bounded-hashed"));
+  w=recomp_replay_create_profile(format,4096);CHECK(w);CHECK(recomp_replay_begin_with_sidecars(w,bounded.c_str(),"bounded\n",nullptr,0,nullptr,0));
+  std::string row(2500,'a');CHECK(recomp_replay_line(w,row.c_str()));CHECK(!recomp_replay_line(w,row.c_str()));
+  CHECK(recomp_replay_error(w));CHECK(!recomp_replay_end(w));CHECK(!recomp_replay_line(w,"after failure"));CHECK(recomp_replay_destroy(w));
+  CHECK(read(fs::u8path(bounded))==std::string("bounded\n")+row);
+ }
 #ifdef _WIN32
  _putenv_s("RECOMP_DIAGNOSTICS_TEST_WRITER_START_DELAY_US","");
 #else
