@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
@@ -13,7 +14,34 @@ typedef void (*DiagCommand)(void* user,DiagServer*,const char* arguments);
 DiagServer* diag_server_create(uint16_t port);
 void diag_server_destroy(DiagServer*);
 uint16_t diag_server_port(const DiagServer*);
+/* Fixed before connecting: one client by default, up to eight for engines with
+ * simultaneous native tools. Replies/disconnects inside callbacks address
+ * only that request's client. Other clients retain independent framing. */
+bool diag_server_client_limit(DiagServer*,unsigned clients);
 bool diag_server_register(DiagServer*,const char* name,DiagCommand,void* user);
+/* Alternate complete-line dispatcher for an existing engine protocol. It
+ * owns parsing; named-command dispatch is bypassed. Same callback rules. */
+/* Configure a fixed raw-protocol limit/error profile before any client.
+ * The default line limit remains8191 bytes. Explicit profiles allow up to
+ *16MiB, grown on demand per connection; response hard bounds remain64MiB.
+ * An error handler receives a malformed-line reason; that line is discarded
+ * through its newline and the connection remains usable. Without it malformed
+ * framing closes the client. Limits cannot exceed these hard bounds. */
+bool diag_server_protocol(DiagServer*,size_t line_bytes,size_t response_bytes,
+                           DiagCommand framing_error,void* user);
+bool diag_server_raw_handler(DiagServer*,DiagCommand,void* user);
+bool diag_server_write(DiagServer*,const char* bytes,size_t size);
+bool diag_server_connected(const DiagServer*);
+/* Unsent userspace bytes. Continue polling to drain before graceful shutdown;
+ * zero means handed to the socket, not acknowledgement by the remote peer. */
+size_t diag_server_pending_output(const DiagServer*);
+/* Deferred until the current poll returns; safe within a command callback. */
+void diag_server_disconnect(DiagServer*);
+/* Finish the active reply, then close only its connection. */
+void diag_server_close_after_reply(DiagServer*);
+/* Dispatch callback only: run once after this client's currently queued reply
+ * bytes reach the socket, independently of other clients. Same callback rules. */
+bool diag_server_after_reply(DiagServer*,void (*callback)(void*),void* user);
 bool diag_server_poll(DiagServer*);
 /* One newline is appended. Responses are bounded to 64 MiB per connection. */
 bool diag_server_reply(DiagServer*,const char* text);
